@@ -1,0 +1,272 @@
+name: "Terraform Deployment"
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - qas
+      - develop
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Azure CLI Login
+      uses: Azure/login@v1.1
+      with:
+        creds: ${{secrets.AZURE_CRED}}
+
+    - name: Azure Key Vault Secrets
+      uses: azure/CLI@v1
+      with:
+        azcliversion: 2.30.0
+        inlineScript: |
+          echo "ARM_CLIENT_ID=$(az keyvault secret show --vault-name kv-sistemasdevops --name spn-githubactions-id | jq -r .value)" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=$(az keyvault secret show --vault-name kv-sistemasdevops --name spn-githubactions-secret | jq -r .value)" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=$(az keyvault secret show --vault-name kv-sistemasdevops --name spn-githubactions-tenant | jq -r .value)" >> $GITHUB_ENV
+          echo "GITHUB_APP_ID=$(az keyvault secret show --vault-name kv-sistemasdevops --name github-app-techhub-appid | jq -r .value)" >> $GITHUB_ENV
+          echo "GITHUB_PRIVATE_KEY=$(az keyvault secret show --vault-name kv-sistemasdevops --name github-app-techhub-key | jq -r .value)" >> $GITHUB_ENV
+   
+    - name: Generate token
+      id: generate_token
+      uses: tibdex/github-app-token@v1
+      with:
+        app_id: ${{ env.GITHUB_APP_ID }}
+        private_key: ${{ env.GITHUB_PRIVATE_KEY }}
+    
+    - name: Check out code
+      uses: actions/checkout@v3
+
+    - name: Create Mutation to Github URL
+      uses: fusion-engineering/setup-git-credentials@v2
+      with:
+        credentials: https://x-access-token:${{ steps.generate_token.outputs.token }}@github.com
+
+    - name: Check if DEV exists
+      id: check_env_dev
+      uses: andstor/file-existence-action@v1
+      with:
+        files: "dev"
+
+    - name: Check if QAS exists
+      id: check_env_qas
+      uses: andstor/file-existence-action@v1
+      with:
+        files: "qas"
+
+    - name: Check if PRD exists
+      id: check_env_prd
+      uses: andstor/file-existence-action@v1
+      with:
+        files: "prd"
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+
+    - name: Terraform fmt
+      id: fmt
+      run: terraform fmt -check
+      continue-on-error: true
+
+    
+    - name: "[DEV] Terraform init"
+      id: init_dev
+      if: steps.check_env_dev.outputs.files_exists == 'true' && github.event_name == 'pull_request' && github.base_ref == 'develop' || steps.check_env_dev.outputs.files_exists == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/develop'
+      run: terraform init     
+      working-directory: dev
+      env:
+        TF_CLI_ARGS_init: "-backend-config=tenant_id=${{ env.ARM_TENANT_ID }} -backend-config=client_id=${{ env.ARM_CLIENT_ID }} -backend-config=client_secret=${{ env.ARM_CLIENT_SECRET }} -upgrade -reconfigure"
+
+    - name: "[DEV] Terraform validate"
+      id: validate_dev
+      if: steps.check_env_dev.outputs.files_exists == 'true' && github.event_name == 'pull_request' && github.base_ref == 'develop'
+      run: terraform validate
+      working-directory: dev
+
+    - name: "[DEV] Terraform plan"
+      id: plan_dev
+      if: steps.check_env_dev.outputs.files_exists == 'true' && github.event_name == 'pull_request' && github.base_ref == 'develop'
+      run: terraform plan -no-color
+      working-directory: dev
+
+    - name: "[DEV] Plan output"
+      id: output_dev
+      uses: actions/github-script@v3
+      if: steps.check_env_dev.outputs.files_exists == 'true' && github.event_name == 'pull_request' && github.base_ref == 'develop'
+      env:
+        PLAN: "terraform\n${{ steps.plan_dev.outputs.stdout }}"
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const output = `#### [DEVELOP]\`
+          #### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+          #### Terraform Initialization ⚙️\`${{ steps.init_dev.outcome }}\`
+          #### Terraform Validation 🤖\`${{ steps.validate_dev.outcome }}\`
+          <details><summary>Validation Output</summary>
+
+          \`\`\`\n
+          ${{ steps.validate_dev.outputs.stdout }}
+          \`\`\`
+
+          </details>
+
+          #### Terraform Plan 📖\`${{ steps.plan_dev.outcome }}\`
+          
+          <details><summary>Show Plan</summary>
+          
+          \`\`\`\n
+          ${process.env.PLAN}
+          \`\`\`
+          
+          </details>
+          
+          *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Working Directory: dev, Workflow: \`${{ github.workflow }}\`*`;
+            
+          github.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: output
+          })
+
+    - name: "[QAS] Terraform init"
+      id: init_qas
+      if: steps.check_env_qas.outputs.files_exists == 'true' && github.event_name == 'pull_request' && github.base_ref == 'qas' || steps.check_env_qas.outputs.files_exists == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/qas'
+      run: terraform init     
+      working-directory: qas
+      env:
+        TF_CLI_ARGS_init: "-backend-config=tenant_id=${{ env.ARM_TENANT_ID }} -backend-config=client_id=${{ env.ARM_CLIENT_ID }} -backend-config=client_secret=${{ env.ARM_CLIENT_SECRET }} -upgrade -reconfigure"
+
+    - name: "[QAS] Terraform validate"
+      id: validate_qas
+      if: steps.check_env_qas.outputs.files_exists == 'true' && github.event_name == 'pull_request' && github.base_ref == 'qas'
+      run: terraform validate
+      working-directory: qas
+
+    - name: "[QAS] Terraform plan"
+      id: plan_qas
+      if: steps.check_env_qas.outputs.files_exists == 'true' && github.event_name == 'pull_request' && github.base_ref == 'qas'
+      run: terraform plan -no-color
+      working-directory: qas
+
+    - name: "[QAS] Plan output"
+      id: output_qas
+      uses: actions/github-script@v3
+      if: steps.check_env_qas.outputs.files_exists == 'true' && github.event_name == 'pull_request' && github.base_ref == 'qas'
+      env:
+        PLAN: "terraform\n${{ steps.plan_qas.outputs.stdout }}"
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const output = `#### [QAS]\`
+          #### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+          #### Terraform Initialization ⚙️\`${{ steps.init_qas.outcome }}\`
+          #### Terraform Validation 🤖\`${{ steps.validate_qas.outcome }}\`
+          <details><summary>Validation Output</summary>
+
+          \`\`\`\n
+          ${{ steps.validate_qas.outputs.stdout }}
+          \`\`\`
+
+          </details>
+
+          #### Terraform Plan 📖\`${{ steps.plan_qas.outcome }}\`
+          
+          <details><summary>Show Plan</summary>
+          
+          \`\`\`\n
+          ${process.env.PLAN}
+          \`\`\`
+          
+          </details>
+          
+          *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Working Directory: qas, Workflow: \`${{ github.workflow }}\`*`;
+            
+          github.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: output
+          })
+
+    - name: "[PRD] Terraform init"
+      id: init_prd
+      if: github.event_name == 'pull_request' && github.base_ref == 'main'|| github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: terraform init     
+      # working-directory: prd
+      env:
+        TF_CLI_ARGS_init: "-backend-config=tenant_id=${{ env.ARM_TENANT_ID }} -backend-config=client_id=${{ env.ARM_CLIENT_ID }} -backend-config=client_secret=${{ env.ARM_CLIENT_SECRET }} -upgrade -reconfigure"
+
+    - name: "[PRD] Terraform validate"
+      id: validate_prd
+      if: github.event_name == 'push' && github.base_ref == 'main'
+      run: terraform validate
+      # working-directory: prd
+
+    - name: "[PRD] Terraform plan"
+      id: plan_prd
+      if: github.event_name == 'push' && github.base_ref == 'main'
+      run: terraform plan -no-color
+      # working-directory: prd
+
+    - name: "[PRD] Plan output"
+      id: output_prd
+      uses: actions/github-script@v3
+      if: github.event_name == 'push' && github.base_ref == 'main'
+      env:
+        PLAN: "terraform\n${{ steps.plan_prd.outputs.stdout }}"
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const output = `#### [PRD]\`
+          #### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+          #### Terraform Initialization ⚙️\`${{ steps.init_prd.outcome }}\`
+          #### Terraform Validation 🤖\`${{ steps.validate_prd.outcome }}\`
+          <details><summary>Validation Output</summary>
+
+          \`\`\`\n
+          ${{ steps.validate_prd.outputs.stdout }}
+          \`\`\`
+
+          </details>
+
+          #### Terraform Plan 📖\`${{ steps.plan_prd.outcome }}\`
+          
+          <details><summary>Show Plan</summary>
+          
+          \`\`\`\n
+          ${process.env.PLAN}
+          \`\`\`
+          
+          </details>
+          
+          *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Workflow: \`${{ github.workflow }}\`*`;
+            
+          github.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: output
+          })
+
+    - name: "[DEV] Terraform apply"
+      id: apply_dev
+      if: steps.check_env_dev.outputs.files_exists == 'true' && github.ref == 'refs/heads/develop' && github.event_name == 'push' 
+      run: terraform apply -auto-approve -input=false
+      working-directory: dev
+
+    - name: "[QAS] Terraform apply"
+      id: apply_qas
+      if: steps.check_env_qas.outputs.files_exists == 'true' && github.ref == 'refs/heads/qas' && github.event_name == 'push' 
+      run: terraform apply -auto-approve -input=false
+      working-directory: qas
+
+    - name: "[PRD] Terraform apply"
+      id: apply_prd
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push' 
+      run: terraform apply -auto-approve -input=false
+      # working-directory: prd

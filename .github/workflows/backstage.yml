@@ -1,0 +1,148 @@
+name: "Terraform Backstage Provision"
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        description: "Terraform Action- Apply or Destroy"     
+        required: true
+        default: "apply"
+        options:
+        - plan 
+        - apply
+        - destroy
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Azure CLI Login
+      uses: Azure/login@v1.1
+      with:
+        creds: ${{secrets.AZURE_CRED}}
+
+    - name: Azure Key Vault Secrets
+      uses: azure/CLI@v1
+      with:
+        azcliversion: 2.30.0
+        inlineScript: |
+          echo "ARM_CLIENT_ID=$(az keyvault secret show --vault-name kv-sistemasdevops --name spn-githubactions-id | jq -r .value)" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=$(az keyvault secret show --vault-name kv-sistemasdevops --name spn-githubactions-secret | jq -r .value)" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=$(az keyvault secret show --vault-name kv-sistemasdevops --name spn-githubactions-tenant | jq -r .value)" >> $GITHUB_ENV
+          echo "GITHUB_APP_ID=$(az keyvault secret show --vault-name kv-sistemasdevops --name github-app-techhub-appid | jq -r .value)" >> $GITHUB_ENV
+          echo "GITHUB_PRIVATE_KEY=$(az keyvault secret show --vault-name kv-sistemasdevops --name github-app-techhub-key | jq -r .value)" >> $GITHUB_ENV
+   
+    - name: Generate token
+      id: generate_token
+      uses: tibdex/github-app-token@v1
+      with:
+        app_id: ${{ env.GITHUB_APP_ID }}
+        private_key: ${{ env.GITHUB_PRIVATE_KEY }}
+    
+    - name: Check out code
+      uses: actions/checkout@v3
+
+    - name: Create Mutation to Github URL
+      uses: fusion-engineering/setup-git-credentials@v2
+      with:
+        credentials: https://x-access-token:${{ steps.generate_token.outputs.token }}@github.com
+
+    - name: Check if DEV exists
+      id: check_env_dev
+      uses: andstor/file-existence-action@v1
+      with:
+        files: "dev"
+
+    - name: Check if QAS exists
+      id: check_env_qas
+      uses: andstor/file-existence-action@v1
+      with:
+        files: "qas"
+
+    - name: Check if PRD exists
+      id: check_env_prd
+      uses: andstor/file-existence-action@v1
+      with:
+        files: "prd"
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+
+    - name: "[DEV] Terraform init"
+      id: init_dev
+      if: steps.check_env_dev.outputs.files_exists == 'true'
+      run: terraform init     
+      working-directory: dev
+      env:
+        TF_CLI_ARGS_init: "-backend-config=tenant_id=${{ env.ARM_TENANT_ID }} -backend-config=client_id=${{ env.ARM_CLIENT_ID }} -backend-config=client_secret=${{ env.ARM_CLIENT_SECRET }} -upgrade -reconfigure"
+
+    - name: "[QAS] Terraform init"
+      id: init_qas
+      if: steps.check_env_qas.outputs.files_exists == 'true'
+      run: terraform init     
+      working-directory: qas
+      env:
+        TF_CLI_ARGS_init: "-backend-config=tenant_id=${{ env.ARM_TENANT_ID }} -backend-config=client_id=${{ env.ARM_CLIENT_ID }} -backend-config=client_secret=${{ env.ARM_CLIENT_SECRET }} -upgrade -reconfigure"
+
+    - name: "[PRD] Terraform init"
+      id: init_prd
+      if: steps.check_env_prd.outputs.files_exists == 'true'
+      run: terraform init     
+      working-directory: prd
+      env:
+        TF_CLI_ARGS_init: "-backend-config=tenant_id=${{ env.ARM_TENANT_ID }} -backend-config=client_id=${{ env.ARM_CLIENT_ID }} -backend-config=client_secret=${{ env.ARM_CLIENT_SECRET }} -upgrade -reconfigure"
+
+    - name: "[DEV] Terraform apply"
+      id: cmd_apply_dev
+      if: steps.check_env_dev.outputs.files_exists == 'true' && inputs.action == 'apply'
+      run: terraform apply -auto-approve -input=false
+      working-directory: dev
+
+    - name: "[QAS] Terraform apply"
+      id: cmd_apply_qas
+      if: steps.check_env_qas.outputs.files_exists == 'true' && inputs.action == 'apply'
+      run: terraform apply -auto-approve -input=false
+      working-directory: qas
+
+    - name: "[PRD] Terraform apply"
+      id: cmd_apply_prd
+      if: steps.check_env_prd.outputs.files_exists == 'true' && inputs.action == 'apply'
+      run: terraform apply -auto-approve -input=false
+      working-directory: prd
+
+    - name: "[DEV] Terraform destroy"
+      id: cmd_destroy_dev
+      if: steps.check_env_dev.outputs.files_exists == 'true' && inputs.action == 'destroy'
+      run: terraform destroy -auto-approve -input=false
+      working-directory: dev
+
+    - name: "[QAS] Terraform destroy"
+      id: cmd_destroy_qas
+      if: steps.check_env_qas.outputs.files_exists == 'true' && inputs.action == 'destroy'
+      run: terraform destroy -auto-approve -input=false
+      working-directory: qas
+
+    - name: "[PRD] Terraform destroy"
+      id: cmd_destroy_prd
+      if: steps.check_env_prd.outputs.files_exists == 'true' && inputs.action == 'destroy'
+      run: terraform destroy -auto-approve -input=false
+      working-directory: prd
+
+    - name: "[DEV] Terraform plan"
+      id: cmd_plan_dev
+      if: steps.check_env_dev.outputs.files_exists == 'true' && inputs.action == 'plan'
+      run: terraform plan
+      working-directory: dev
+
+    - name: "[QAS] Terraform plan"
+      id: cmd_plan_qas
+      if: steps.check_env_qas.outputs.files_exists == 'true' && inputs.action == 'plan'
+      run: terraform plan
+      working-directory: qas
+
+    - name: "[PRD] Terraform plan"
+      id: cmd_plan_prd
+      if: steps.check_env_prd.outputs.files_exists == 'true' && inputs.action == 'plan'
+      run: terraform plan
+      working-directory: prd
